@@ -7,6 +7,21 @@ typedef struct { ll a, b; } ll2;
 typedef struct { ll a, b, c; } ll3;
 typedef struct { ll a, b, c, d; } ll4;
 
+#define THROW(fmt, ...) (fprintf(stderr, "Error: " fmt " at line %d\n", ##__VA_ARGS__, __LINE__), exit(1))
+
+/// BEGIN RAND
+ll rand_seed = 0x123456789LL;
+
+ll rand_next() {
+    ll x = rand_seed;
+    x ^= x << 13;
+    x ^= x >> 7;
+    x ^= x << 17;
+    return rand_seed = x;
+}
+/// END RAND
+
+/// BEGIN LIST
 typedef struct {
     int len; // <= cap
     int cap; // 2**n
@@ -14,9 +29,6 @@ typedef struct {
     ll *data;
 } list;
 
-#define THROW(fmt, ...) (fprintf(stderr, "Error: " fmt " at line %d\n", ##__VA_ARGS__, __LINE__), exit(1))
-
-/// BEGIN LIST
 list *list_new(int cap) {
     list *q = (list *) malloc(sizeof(list));
     q->cap = 1;
@@ -135,6 +147,157 @@ ll list_sort_by(list *q, int (*f)(ll, ll)) {
     return inv;
 }
 /// END LIST
+
+/// BEGIN TREAP
+// 参考: https://shifth.hatenablog.com/entry/2015/05/10/101822
+struct treap_node {
+    void *value;
+    struct treap_node *l, *r;
+    ll pri;
+    int rev;
+    int len;
+};
+typedef struct treap_node treap_node;
+typedef struct {
+    treap_node *l;
+    treap_node *r;
+} treap_node_pair;
+
+treap_node *treap_node_new(void *value) {
+    treap_node *t = (treap_node *) malloc(sizeof(treap_node));
+    t->value = value;
+    t->l = t->r = NULL;
+    t->pri = rand_next();
+    t->rev = 0;
+    t->len = 1;
+    return t;
+}
+void treap_node_free(treap_node *t) {
+    if (t->l) treap_node_free(t->l);
+    if (t->r) treap_node_free(t->r);
+    free(t);
+}
+void treap_node_push(treap_node *t) {
+    if (!t) return;
+    if (t->rev) {
+        t->rev = 0;
+        treap_node *x = t->l;
+        t->l = t->r;
+        t->r = x;
+        if (t->l) t->l->rev = !t->l->rev;
+        if (t->r) t->r->rev = !t->r->rev;
+    }
+}
+void treap_node_update(treap_node *t) {
+    treap_node_push(t);
+    t->len = 1;
+    if (t->l) t->len += t->l->len;
+    if (t->r) t->len += t->r->len;
+}
+treap_node *treap_node_merge(treap_node *l, treap_node *r) {
+    if (!l || !r) return l ? l : r ? r : NULL;
+    if (l->pri > r->pri) {
+        l->r = treap_node_merge(l->r, r);
+        treap_node_update(l);
+        return l;
+    } else {
+        r->l = treap_node_merge(l, r->l);
+        treap_node_update(r);
+        return r;
+    }
+}
+const treap_node_pair treap_node_pair_null = {NULL, NULL};
+treap_node_pair treap_node_split(treap_node *t, int at) {
+    if (!t) return treap_node_pair_null;
+    int l_len = t->l ? t->l->len : 0;
+    if (at <= l_len) {
+        treap_node_pair p = treap_node_split(t->l, at);
+        t->l = p.r;
+        p.r = t;
+        return p;
+    } else {
+        treap_node_pair p = treap_node_split(t->r, at - l_len - 1);
+        t->r = p.l;
+        p.l = t;
+        return p;
+    }
+}
+treap_node *treap_node_at(treap_node *t, int at) {
+    if (!t) return NULL;
+    int l_len = t->l ? t->l->len : 0;
+    if (at < l_len) {
+        return treap_node_at(t->l, at);
+    } else if (at == l_len) {
+        return t;
+    } else {
+        return treap_node_at(t->r, at - l_len - 1);
+    }
+}
+int treap_node_partition_point(treap_node *t, int (*f)(void *)) {
+    if (!t) return 0;
+    int l_len = t->l ? t->l->len : 0;
+    if (f(t->value)) {
+        return l_len + 1 + treap_node_partition_point(t->r, f);
+    } else {
+        return treap_node_partition_point(t->l, f);
+    }
+}
+
+typedef struct {
+    treap_node *root;
+} treap;
+
+treap *treap_new() {
+    treap *t = (treap *) malloc(sizeof(treap));
+    t->root = NULL;
+    return t;
+}
+void treap_free(treap *t) {
+    if (t->root) treap_node_free(t->root);
+    free(t);
+}
+int treap_len(treap *t) {
+    if (!t->root) return 0;
+    return t->root->len;
+}
+void treap_insert(treap *t, int index, void *item) {
+    if (!(index <= treap_len(t))) THROW("treap_insert(): index out of bounds");
+    treap_node *node = treap_node_new(item);
+    if (!t->root) {
+        t->root = node;
+    } else {
+        treap_node_pair p = treap_node_split(t->root, index);
+        t->root = treap_node_merge(p.l, treap_node_merge(node, p.r));
+    }
+}
+int treap_partition_point(treap *t, int (*f)(void *)) {
+    return treap_node_partition_point(t->root, f);
+}
+void *treap_temporary_item;
+int (*treap_temporary_cmp)(void *, void *);
+int treap_cmp_f(void *x) {
+    return treap_temporary_cmp(x, treap_temporary_item) <= 0;
+}
+void treap_insert_sorted(treap *t, int (*cmp)(void *, void *), void *item) {
+    treap_temporary_item = item;
+    treap_temporary_cmp = cmp;
+    int index = treap_partition_point(t, treap_cmp_f);
+    treap_insert(t, index, item);
+}
+void *treap_remove(treap *t, int index) {
+    if (!(index < treap_len(t))) THROW("treap_remove(): index out of bounds");
+    treap_node_pair pl = treap_node_split(t->root, index);
+    treap_node_pair pr = treap_node_split(pl.r, 1);
+    t->root = treap_node_merge(pl.l, pr.r);
+    void *item = pr.l->value;
+    treap_node_free(pr.l);
+    return item;
+}
+void **treap_at(treap *t, int index) {
+    if (!(index < treap_len(t))) THROW("treap_at(): index out of bounds");
+    return &treap_node_at(t->root, index)->value;
+}
+/// END TREAP
 
 int cmp(ll x, ll y) {
     return x - y;
